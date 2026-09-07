@@ -39,6 +39,7 @@ import subprocess
 import time
 from typing import Optional
 
+from ..followup_timing import NEXT_CHECK_HINTS, compute_next_check_at
 from ..model_interface import ModelInterface, ModelResult
 from ..models import ACTION_TYPES
 
@@ -69,34 +70,56 @@ Action Type 與 Domain 是兩個獨立維度，不要混在一起判斷。
 如果訊息裡的日期本身就模糊不確定（例如「明理日親送，確切時間稍後補充」這種還沒定案的狀態），也留 null，
 不要把「還沒確定的推測」當成 due_at 寫進去。
 
-## 2b. 下次追蹤時間（next_check_at）與追蹤卡點（waiting_on）—— 2026-09-07 新增
-**due_at 跟 next_check_at 是兩個完全不同的軸，不要混在一起判斷：**
-- due_at = 這件事「本身」的時間（截止日期／行程／提醒時間），是對現實世界的事實陳述，沒有 Henry
+## 2b. 下次追蹤時間(next_check_hint)與追蹤卡點(waiting_on)—— 2026-09-07 新增,2026-09-07 修正(見下方「同日待補資訊」)
+**due_at 跟「下次追蹤」是兩個完全不同的軸,不要混在一起判斷：**
+- due_at = 這件事「本身」的時間(截止日期／行程／提醒時間),是對現實世界的事實陳述,沒有 Henry
   給的資訊就不能填。
-- next_check_at = **Pilot 系統自己**下一次應該主動回頭確認/提醒這件事的時間，是一個排程上的操作決定，
-  不是對現實世界的事實陳述。即使 due_at 因為資訊不足必須留 null，next_check_at 仍然可以合理設定
+- 「下次追蹤」= **Pilot 系統自己**下一次應該主動回頭確認/提醒這件事的時間,是一個排程上的操作決定,
+  不是對現實世界的事實陳述。即使 due_at 因為資訊不足必須留 null,「下次追蹤」仍然可以合理設定
   ——因為「什麼時候該去問」跟「事情本身幾點發生」是兩回事。
-- 只有 action_type 是 follow_up、reminder、todo 而且這件事**還沒結束、需要之後主動確認**時才需要填
-  next_check_at；knowledge、idea、decision_record 這類不需要之後主動追蹤的內容，next_check_at 留 null。
-- 如果訊息裡完全沒有給任何時間線索（連「明天」「稍後」這種粗略詞都沒有），也不要自己編一個時間，
-  next_check_at 留 null 即可，交給 Henry 之後自己說，或由 Daily Close 把這筆列為「尚未排時間」。
-- **絕對不要把「稍後補充」這種模糊詞自己腦補成一個具體時間點（例如自己編一個 17:00）。** 如果訊息裡有粗略的
-  時間線索（例如「明天」但沒說幾點），next_check_at 可以取一個合理、寬鬆的查詢時間點（例如隔天上午，
-  但不要精確到刻意挑一個看起來很篤定的分鐘數，這是系統排程用的粗估，不是對外部事實的宣稱）。
+- **你(模型)不要自己計算「下次追蹤」的精確時間點,那是 Pilot 程式碼用固定策略計算的,不是你的工作。**
+  你只需要判斷 `next_check_hint` 這個**分類**,三選一或 null,程式碼會把它換算成實際時間:
+  - `"same_day"`:訊息暗示**今天稍後**會有新資訊(見下面「同日待補資訊」的線索詞)。
+  - `"next_day"`:訊息明確暗示**明天**才會有新資訊或結果。
+  - `"later"`:訊息暗示會是**更久以後**(下週、改天、還沒確定日期)才有新資訊——這種不用排程主動追,
+    留給 Henry 之後自己說,或由 Daily Close 的「尚未排時間」列出。
+  - `null`:這則不需要之後主動追蹤(例如 knowledge、idea、decision_record,或已經有明確 due_at 不需要
+    另外追的情況)。
+- 如果訊息裡完全沒有任何時間線索,`next_check_hint` 留 null,不要為了填欄位硬猜。
+
+### 同日待補資訊(same-day pending information promise)—— 2026-09-07 修正重點
+**這是這次修正最重要的一點,務必注意：** 如果 Henry 的訊息裡有「稍後」「晚點」「待會」「稍晚」「馬上」
+「等一下」「今天再」「今天會」「晚一點」「稍後補充」「我晚點問完告訴你」「等一下給你」這類詞,代表
+**今天之內**還有一個尚未完成的資訊承諾(對方今天稍晚會回覆某個關鍵資訊)。這種情況:
+- `next_check_hint` 必須是 `"same_day"`,**絕對不能因為「不知道確切時間」就跳成 `"next_day"`
+  或留 null 拖到明天才第一次追**——今天稍晚就該回頭確認一次「補充的資訊到了沒」,不是等到隔天。
+- 這跟「明天再回覆」「明天說」「明天確認」「明天答覆你」這種**明確講明天**的情況不同,那種才是
+  `"next_day"`。
+- 跟「下週」「改天」「之後」這種更模糊、更久以後的講法也不同,那種是 `"later"`。
+- **不要把「稍後」腦補成一個具體時間(例如自己編 17:00 當作 due_at 或宣稱送貨會在那個時間發生)。**
+  `next_check_hint="same_day"` 只是告訴 Pilot「今天該回頭問一次」這個排程判斷,不是在講這件事本身
+  幾點會發生——那個部分 due_at 仍然照第 2 點的規則留 null。
 
 waiting_on 用來標記這件事目前卡在哪：
-- `"external"`：卡在 Henry 以外的人事物（廠商、同事、還沒發生的事件）——Pilot 不需要 Henry 現在做什麼，
+- `"external"`：卡在 Henry 以外的人事物(廠商、同事、還沒發生的事件)——Pilot 不需要 Henry 現在做什麼,
   只需要之後主動回頭確認結果。
 - `"henry"`：Pilot 需要 Henry 本人補充資訊或做決定才能繼續追蹤——通常伴隨著你在回覆裡反問了 Henry 一句。
-- 不確定就留 null，不要為了填欄位硬猜是 external 還是 henry。
+- 不確定就留 null,不要為了填欄位硬猜是 external 還是 henry。
 
-### 範例（真實案例，務必參考這個判斷方式）
-Henry 說：「克靈固環境及食品消毒劑，廠商回覆經理明日會親送，確切上午、下午稍晚補充，幫我持續追蹤這一筆資料」
-- due_at：**null**（廠商還沒說確切幾點送，不能自己編一個時間當作截止時間）
-- next_check_at：明天上午的某個合理查詢時間點（用上面的「現在時間」推算「明天」，系統決定何時該去確認
-  上午/下午，而不是宣稱送貨真的會在那個時間發生）
-- waiting_on：**"external"**（卡在廠商/經理身上，不是卡在 Henry）
+### 範例(真實案例,務必參考這個判斷方式——2026-09-07 修正)
+Henry 說：「克靈固環境及食品消毒劑,廠商剛剛回覆,經理明日會親送過去,確切上午、下午我稍晚跟您說,
+幫我持續追蹤這一筆資料」
+- due_at：**null**(廠商還沒說確切幾點送,不能自己編一個時間當作截止時間)
+- `next_check_hint`：**`"same_day"`**(「稍晚跟您說」是今天之內的待補資訊承諾,不是「明天」這件事本身
+  的時間——這則訊息裡同時有「明日親送」跟「稍晚跟您說」兩個時間線索,前者是 due_at 相關但因為沒有確切
+  時段所以留 null,後者才是決定 next_check_hint 的關鍵,**不要因為訊息裡出現「明天」就誤判成
+  `"next_day"`**)
+- waiting_on：**"external"**(卡在廠商/經理身上,不是卡在 Henry)
 - action_type: follow_up
+
+之後如果 Henry 回覆「廠商確認明天下午 3 點送」,那是另一次獨立的訊息/互動,交給 Henry 或負責串接的人
+用 `follow-up-advance` 指令處理(把「今天追的問題」結案、開一筆新的「明天下午 3 點後確認是否送達」的
+追蹤),不是這次分類呼叫該做的事。
 
 ## 3. 完成判斷（規格書 SS4.3）
 只有在 Henry 的話清楚表示「這件事做完了」時，才可以把這則視為結案訊號。
@@ -129,7 +152,7 @@ Henry 說：「克靈固環境及食品消毒劑，廠商回覆經理明日會�
 
 ## 輸出格式
 先給 Henry 看的回覆文字，最後另起一行，用單獨一個 ```json fenced block 包住結構化結果，格式必須恰好是：
-{{"action_type": "...", "domain": "..." 或 null, "due_at": "ISO 8601 字串" 或 null, "next_check_at": "ISO 8601 字串" 或 null, "waiting_on": "henry" 或 "external" 或 null}}
+{{"action_type": "...", "domain": "..." 或 null, "due_at": "ISO 8601 字串" 或 null, "next_check_hint": "same_day" 或 "next_day" 或 "later" 或 null, "waiting_on": "henry" 或 "external" 或 null}}
 不要在 json block 以外再重複這個結構化資訊。
 
 重要：這次呼叫跟你平常的互動無關，不要使用任何檔案/程式碼工具，只需要根據下面這則訊息，直接輸出上述格式的文字回覆。"""
@@ -138,10 +161,11 @@ _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def _validated_iso_datetime(raw_value):
-    """Shared honest-fallback parse for due_at/next_check_at: only ever
-    returns the string back if it's a real parseable ISO 8601 datetime,
-    otherwise None -- never guessed/repaired, never crashes the whole
-    classification on a malformed model string."""
+    """Honest-fallback parse for due_at (the only field the model still
+    reports as a raw ISO datetime -- next_check_hint is qualitative, see
+    followup_timing.py): only ever returns the string back if it's a real
+    parseable ISO 8601 datetime, otherwise None -- never guessed/repaired,
+    never crashes the whole classification on a malformed model string."""
     if not raw_value:
         return None
     try:
@@ -166,7 +190,8 @@ class ClaudeProvider(ModelInterface):
             )
 
     def classify_and_respond(self, *, raw_input: str, purpose: str = "intake_classification") -> ModelResult:
-        now_iso = dt.datetime.now().astimezone().isoformat()
+        now_dt = dt.datetime.now().astimezone()
+        now_iso = now_dt.isoformat()
         system_prompt = _build_system_prompt(now_iso)
         full_prompt = f"{system_prompt}\n\n---\n\nHenry 的訊息：\n{raw_input}"
 
@@ -188,7 +213,15 @@ class ClaudeProvider(ModelInterface):
                 action_type = parsed.get("action_type", "unknown") or "unknown"
                 domain = parsed.get("domain")
                 due_at = _validated_iso_datetime(parsed.get("due_at"))
-                next_check_at = _validated_iso_datetime(parsed.get("next_check_at"))
+                # 2026-09-07 Temporal Follow-up Reasoning Correction: the
+                # model only ever gives a qualitative next_check_hint
+                # (same_day/next_day/later/None) -- the actual datetime
+                # math is done deterministically in followup_timing.py,
+                # never by asking the model to compute a timestamp.
+                raw_hint = parsed.get("next_check_hint")
+                hint = raw_hint if raw_hint in NEXT_CHECK_HINTS else None
+                computed = compute_next_check_at(hint, now_dt)
+                next_check_at = computed.isoformat() if computed is not None else None
                 raw_waiting_on = parsed.get("waiting_on")
                 waiting_on = raw_waiting_on if raw_waiting_on in ("henry", "external") else None
             except (json.JSONDecodeError, AttributeError):

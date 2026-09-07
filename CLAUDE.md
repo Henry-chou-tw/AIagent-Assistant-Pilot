@@ -105,3 +105,11 @@ session：
   `waiting_on`（`"henry"` / `"external"` / null）標記卡在誰身上，是
   Daily Close 判斷「要不要真的發送」的依據，不要在不確定的情況下手動塞值
   進去讓它看起來已經分類過。
+- （2026-09-07 Temporal Follow-up Reasoning Correction 這輪修正）分類模型
+  不會直接輸出 `next_check_at` 的精確時間，只會輸出 `next_check_hint`
+  （`"same_day"` / `"next_day"` / `"later"` / null），實際時間由
+  `pilot_agent/followup_timing.py` 的固定策略算出來。看到「今天稍晚會
+  補充」這類詞（稍後/晚點/待會/稍晚/馬上/等一下/今天再/今天會）要判斷成
+  `"same_day"`，不能因為訊息裡同時出現「明天」字樣就誤判成 `"next_day"`
+  ——這是這輪修正的真實案例（克靈固消毒劑），改壞這條規則等於重新引入
+  原本的錯誤。

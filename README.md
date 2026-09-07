@@ -115,10 +115,27 @@ session，不需要 ANTHROPIC_API_KEY），所以執行 `pilot_agent.main handle
 `due_at` 是這件事「本身」的時間（截止日期／行程／提醒時間），只有 Henry 訊息裡有明確或
 可合理推算的日期時才會被填入，沒有就是 null，絕不瞎猜。`next_check_at` 是 Pilot **自己**
 決定「下次該回頭檢查/提醒」的時間——一個排程上的操作決定，不是對現實世界的事實陳述。
-即使 `due_at` 因為資訊不足留 null（例如「廠商明天親送,確切時段稍後補充」）,`next_check_at`
-仍然可以合理設定(例如「明天上午再問一次」),因為「什麼時候該去問」跟「事情本身幾點發生」
-是兩回事。這兩個欄位由 `pilot_agent/providers/claude_provider.py` 的 system prompt 明確
-教過模型分開判斷,不會混用。
+
+**分類模型不會直接算出 `next_check_at` 的精確時間**（2026-09-07 Temporal Follow-up
+Reasoning Correction 這輪修正）：模型只判斷一個**分類** `next_check_hint`
+（`"same_day"` / `"next_day"` / `"later"` / null），實際時間由
+`pilot_agent/followup_timing.py` 的固定策略（deterministic policy）算出來，不讓模型自己
+做時間運算——這樣算出來的時間才是可重現、可測試的，也才不會讓模型把「不確定」偷偷腦補成一個
+看起來很篤定的時間點：
+
+- `"same_day"`：訊息暗示**今天稍後**會有新資訊（「稍後」「晚點」「待會」「稍晚」「馬上」
+  「等一下」「今天再」「今天會」「晚一點」「稍後補充」這類詞）→ 現在時間 +2.5 小時左右
+  （若超過當天 21:00 才觸發，往回收斂到當天內，絕不跨到隔天）。
+- `"next_day"`：訊息**明確講明天**才會有結果 → 隔天 09:00。
+- `"later"`：更久以後（下週、改天、還沒定日期）→ 不排程，留 null，交給 Daily Close 的
+  「尚未排時間」列出，不用猜。
+- `null`：這則不需要之後主動追蹤。
+
+即使 `due_at` 因為資訊不足留 null（例如「廠商明天親送,確切時段稍後補充」），`next_check_hint`
+仍然可以合理判斷成 `"same_day"`——因為「今天稍晚該不該回頭問」跟「事情本身幾點發生」是兩回事。
+**「明天親送」跟「稍後補充」是同一則訊息裡兩個不同的時間線索，不要因為訊息裡出現「明天」字樣
+就把 `next_check_hint` 誤判成 `"next_day"`**——這正是這輪修正的真實案例（見下方克靈固消毒劑
+案例）。
 
 ### `follow-up-watch`：真正的到期檢查（不是用固定時間取代追蹤）
 
@@ -188,3 +205,8 @@ follow-up,不會硬塞進單一 `due_at`/`next_check_at`,而是用既有的 `rel
 - `follow-up-watch` 的重試間隔（6 小時）跟自動提醒上限（3 次）目前是寫死的常數
   （`pilot_agent/follow_up_watch.py` 的 `RETRY_INTERVAL` / `MAX_AUTO_REMINDERS`），還沒有
   依 domain/緊急程度做差異化，也還沒有真實使用數據可以校準這兩個數字合不合理。
+- `next_check_hint` 的「同日待補資訊」判斷（`pilot_agent/followup_timing.py`）目前只認
+  中文口語裡幾種常見講法（稍後/晚點/待會/稍晚/馬上/等一下/今天再/今天會/晚一點/稍後補充），
+  也還沒有真實使用數據驗證這份線索詞清單夠不夠涵蓋 Henry 實際會用的講法；`SAME_DAY_INTERVAL_HOURS`
+  （2.5 小時）、`SAME_DAY_CUTOFF_HOUR`（21:00）、`NEXT_DAY_CHECK_HOUR`（09:00）這幾個常數
+  也是先訂的合理預設值，還沒被真實數據校準過。
