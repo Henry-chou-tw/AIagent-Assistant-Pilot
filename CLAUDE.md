@@ -39,14 +39,42 @@ session。
 .venv/Scripts/python.exe -m pilot_agent.main close --id <id> --status done|cancelled|in_progress --outcome "<結果原文>"
 ```
 
-## 08:15 / 22:00 主動通知（2026-09-07 新增，不是這個即時 session 的工作）
+## 如果 Henry 的訊息是在回覆一筆還開著的多階段追蹤（2026-09-07 新增）
 
-`morning-brief` / `daily-close` 這兩個指令是給 Windows「工作排程器」在固定
-時間呼叫的，直接查資料庫、透過 Discord REST API 主動發送，**不經過**這個
-即時 Channels session。如果 Henry 在對話裡問「Morning Brief 怎麼還沒來」
+有些 follow_up 是分階段的（例如：今天先追蹤「明天到底上午還是下午送」，
+等 Henry 提供了這個資訊，才輪到追蹤「實際是否送達」）。如果你判斷 Henry
+這則訊息明顯是在回覆一筆**最近的、還開著的 follow_up/reminder/todo**（可以
+先用 `list-open --action-type follow_up` 之類的指令確認有沒有這種還開著
+的項目、內容是否對得上),才執行：
+
+```
+.venv/Scripts/python.exe -m pilot_agent.main follow-up-advance --id <那筆還開著的 id> --outcome "<Henry 提供的新資訊，原文>" [--next-input "<下一階段要追蹤的內容>" --next-check-at <ISO 8601，只有 Henry 這次真的給了具體時間才填> --next-waiting-on henry|external]
+```
+
+這一步**判斷要謹慎，不確定就不要用**——不確定 Henry 這則訊息是不是在回覆
+某筆舊的追蹤時，直接照平常流程跑 `handle` 當作一則新訊息即可，不要為了
+硬要串起來而亂猜。`--next-check-at` 只有在 Henry/對方這次真的給了具體時間
+才能填，沒有具體時間就留空，交給之後的 `follow-up-watch` 或 Daily Close
+去處理，不要自己編。
+
+## 主動通知 / 主動追蹤（2026-09-07 新增，都不是這個即時 session 的工作）
+
+三支各自獨立、都是給 Windows「工作排程器」在固定時間呼叫的指令，直接查
+資料庫、透過 Discord REST API 主動發送，**不經過**這個即時 Channels
+session：
+
+- `morning-brief`（08:15）/ `daily-close`（22:00）：**摘要層**，一天發一次。
+- `follow-up-watch`（每小時）：**真正的追蹤到期檢查**，查 `next_check_at`
+  到期的項目並主動提醒，有內建防洗版機制（連續提醒到上限後會自動停止，
+  轉成 Daily Close 裡「需要你補資訊/決定」的項目）。不要把這支的責任跟
+  前兩支混在一起——Morning Brief/Daily Close 不做到期檢查，到期檢查是這支
+  的工作。
+
+如果 Henry 在對話裡問「Morning Brief 怎麼還沒來」「這筆怎麼都沒提醒我」
 之類的問題，那是排程本身（Windows 工作排程器有沒有設定好、有沒有正常
-觸發）的問題，不是這個 session 該處理的事，如實告訴 Henry 去確認工作排程器
-狀態即可，不要自己嘗試在這個互動 session 裡「補發」一次充當已經自動發生。
+觸發這三個工作）的問題，不是這個 session 該處理的事，如實告訴 Henry 去確認
+工作排程器狀態即可，不要自己嘗試在這個互動 session 裡「補發」一次充當
+已經自動發生。
 
 ## 一般規則
 
@@ -70,3 +98,10 @@ session。
   系統自身能力邊界（例如目前收不到圖片/附件）這幾條規則——如果 Henry
   之後又覺得回覆「沒有 AI 感」，先去看這段 system prompt 有沒有被改動，
   不要假設問題出在分類邏輯。
+- （2026-09-07 Follow-up Runtime Closure 這輪新增）`due_at` 跟
+  `next_check_at` 是兩個不同的東西：`due_at` 是事情本身的時間（沒給就是
+  null），`next_check_at` 是 Pilot 自己決定「下次該回頭確認」的時間。看到
+  程式或資料裡這兩個欄位時不要混著改，也不要假設其中一個可以取代另一個。
+  `waiting_on`（`"henry"` / `"external"` / null）標記卡在誰身上，是
+  Daily Close 判斷「要不要真的發送」的依據，不要在不確定的情況下手動塞值
+  進去讓它看起來已經分類過。

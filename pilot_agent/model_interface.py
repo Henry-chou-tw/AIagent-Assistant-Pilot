@@ -19,6 +19,8 @@ class ModelResult:
     response_text: str
     model_used: str
     due_at: Optional[str] = None  # ISO 8601 datetime string if the model could determine one; never fabricated
+    next_check_at: Optional[str] = None  # ISO 8601 string: when the Pilot should next check/remind on this; a scheduling choice, not a fact about the world (see models.py)
+    waiting_on: Optional[str] = None  # "henry" | "external" | None -- see models.WAITING_ON_VALUES
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     latency_ms: Optional[float] = None

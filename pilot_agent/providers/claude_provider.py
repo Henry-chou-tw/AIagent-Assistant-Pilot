@@ -69,6 +69,35 @@ Action Type 與 Domain 是兩個獨立維度，不要混在一起判斷。
 如果訊息裡的日期本身就模糊不確定（例如「明理日親送，確切時間稍後補充」這種還沒定案的狀態），也留 null，
 不要把「還沒確定的推測」當成 due_at 寫進去。
 
+## 2b. 下次追蹤時間（next_check_at）與追蹤卡點（waiting_on）—— 2026-09-07 新增
+**due_at 跟 next_check_at 是兩個完全不同的軸，不要混在一起判斷：**
+- due_at = 這件事「本身」的時間（截止日期／行程／提醒時間），是對現實世界的事實陳述，沒有 Henry
+  給的資訊就不能填。
+- next_check_at = **Pilot 系統自己**下一次應該主動回頭確認/提醒這件事的時間，是一個排程上的操作決定，
+  不是對現實世界的事實陳述。即使 due_at 因為資訊不足必須留 null，next_check_at 仍然可以合理設定
+  ——因為「什麼時候該去問」跟「事情本身幾點發生」是兩回事。
+- 只有 action_type 是 follow_up、reminder、todo 而且這件事**還沒結束、需要之後主動確認**時才需要填
+  next_check_at；knowledge、idea、decision_record 這類不需要之後主動追蹤的內容，next_check_at 留 null。
+- 如果訊息裡完全沒有給任何時間線索（連「明天」「稍後」這種粗略詞都沒有），也不要自己編一個時間，
+  next_check_at 留 null 即可，交給 Henry 之後自己說，或由 Daily Close 把這筆列為「尚未排時間」。
+- **絕對不要把「稍後補充」這種模糊詞自己腦補成一個具體時間點（例如自己編一個 17:00）。** 如果訊息裡有粗略的
+  時間線索（例如「明天」但沒說幾點），next_check_at 可以取一個合理、寬鬆的查詢時間點（例如隔天上午，
+  但不要精確到刻意挑一個看起來很篤定的分鐘數，這是系統排程用的粗估，不是對外部事實的宣稱）。
+
+waiting_on 用來標記這件事目前卡在哪：
+- `"external"`：卡在 Henry 以外的人事物（廠商、同事、還沒發生的事件）——Pilot 不需要 Henry 現在做什麼，
+  只需要之後主動回頭確認結果。
+- `"henry"`：Pilot 需要 Henry 本人補充資訊或做決定才能繼續追蹤——通常伴隨著你在回覆裡反問了 Henry 一句。
+- 不確定就留 null，不要為了填欄位硬猜是 external 還是 henry。
+
+### 範例（真實案例，務必參考這個判斷方式）
+Henry 說：「克靈固環境及食品消毒劑，廠商回覆經理明日會親送，確切上午、下午稍晚補充，幫我持續追蹤這一筆資料」
+- due_at：**null**（廠商還沒說確切幾點送，不能自己編一個時間當作截止時間）
+- next_check_at：明天上午的某個合理查詢時間點（用上面的「現在時間」推算「明天」，系統決定何時該去確認
+  上午/下午，而不是宣稱送貨真的會在那個時間發生）
+- waiting_on：**"external"**（卡在廠商/經理身上，不是卡在 Henry）
+- action_type: follow_up
+
 ## 3. 完成判斷（規格書 SS4.3）
 只有在 Henry 的話清楚表示「這件事做完了」時，才可以把這則視為結案訊號。
 如果只能看出「有進展但不確定是否完成」，不要自己認定完成，回覆時用一句話問清楚必要的最少資訊即可，不要問一大串。
@@ -100,12 +129,26 @@ Action Type 與 Domain 是兩個獨立維度，不要混在一起判斷。
 
 ## 輸出格式
 先給 Henry 看的回覆文字，最後另起一行，用單獨一個 ```json fenced block 包住結構化結果，格式必須恰好是：
-{{"action_type": "...", "domain": "..." 或 null, "due_at": "ISO 8601 字串" 或 null}}
+{{"action_type": "...", "domain": "..." 或 null, "due_at": "ISO 8601 字串" 或 null, "next_check_at": "ISO 8601 字串" 或 null, "waiting_on": "henry" 或 "external" 或 null}}
 不要在 json block 以外再重複這個結構化資訊。
 
 重要：這次呼叫跟你平常的互動無關，不要使用任何檔案/程式碼工具，只需要根據下面這則訊息，直接輸出上述格式的文字回覆。"""
 
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _validated_iso_datetime(raw_value):
+    """Shared honest-fallback parse for due_at/next_check_at: only ever
+    returns the string back if it's a real parseable ISO 8601 datetime,
+    otherwise None -- never guessed/repaired, never crashes the whole
+    classification on a malformed model string."""
+    if not raw_value:
+        return None
+    try:
+        dt.datetime.fromisoformat(raw_value)
+        return raw_value
+    except (ValueError, TypeError):
+        return None
 
 _CLI_TIMEOUT_SECONDS = 120
 
@@ -134,6 +177,8 @@ class ClaudeProvider(ModelInterface):
         action_type = "unknown"
         domain = None
         due_at = None
+        next_check_at = None
+        waiting_on = None
         match = _JSON_BLOCK_RE.search(full_text)
         response_text = full_text
         if match:
@@ -142,15 +187,10 @@ class ClaudeProvider(ModelInterface):
                 parsed = json.loads(match.group(1))
                 action_type = parsed.get("action_type", "unknown") or "unknown"
                 domain = parsed.get("domain")
-                raw_due_at = parsed.get("due_at")
-                if raw_due_at:
-                    try:
-                        # Validate it's a real parseable datetime before trusting it --
-                        # never pass an unparseable model string through as due_at.
-                        dt.datetime.fromisoformat(raw_due_at)
-                        due_at = raw_due_at
-                    except ValueError:
-                        due_at = None  # honest fallback, never guessed/repaired
+                due_at = _validated_iso_datetime(parsed.get("due_at"))
+                next_check_at = _validated_iso_datetime(parsed.get("next_check_at"))
+                raw_waiting_on = parsed.get("waiting_on")
+                waiting_on = raw_waiting_on if raw_waiting_on in ("henry", "external") else None
             except (json.JSONDecodeError, AttributeError):
                 pass  # honest fallback: unknown/null, never fabricated
 
@@ -160,6 +200,8 @@ class ClaudeProvider(ModelInterface):
             response_text=response_text or "(no response text)",
             model_used=self._model,
             due_at=due_at,
+            next_check_at=next_check_at,
+            waiting_on=waiting_on,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             latency_ms=latency_ms,

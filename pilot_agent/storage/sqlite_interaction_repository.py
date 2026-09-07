@@ -34,14 +34,16 @@ class SqliteInteractionRepository(InteractionRepository):
                 model_used, input_tokens, output_tokens, latency_ms, estimated_cost_usd, purpose,
                 tool_executions_json,
                 henry_correction, final_action_type, final_domain,
-                task_status, related_interaction_id, closure_outcome, closed_at
+                task_status, related_interaction_id, closure_outcome, closed_at,
+                next_check_at, last_checked_at, reminder_count, waiting_on
             ) VALUES (
                 :id, :schema_version, :created_at, :source, :channel_ref, :raw_input,
                 :action_type, :domain, :due_at, :agent_response,
                 :model_used, :input_tokens, :output_tokens, :latency_ms, :estimated_cost_usd, :purpose,
                 :tool_executions_json,
                 :henry_correction, :final_action_type, :final_domain,
-                :task_status, :related_interaction_id, :closure_outcome, :closed_at
+                :task_status, :related_interaction_id, :closure_outcome, :closed_at,
+                :next_check_at, :last_checked_at, :reminder_count, :waiting_on
             )
             ON CONFLICT(id) DO UPDATE SET
                 due_at=excluded.due_at,
@@ -59,7 +61,11 @@ class SqliteInteractionRepository(InteractionRepository):
                 task_status=excluded.task_status,
                 related_interaction_id=excluded.related_interaction_id,
                 closure_outcome=excluded.closure_outcome,
-                closed_at=excluded.closed_at
+                closed_at=excluded.closed_at,
+                next_check_at=excluded.next_check_at,
+                last_checked_at=excluded.last_checked_at,
+                reminder_count=excluded.reminder_count,
+                waiting_on=excluded.waiting_on
             """,
             {
                 "id": interaction.id,
@@ -86,6 +92,10 @@ class SqliteInteractionRepository(InteractionRepository):
                 "related_interaction_id": interaction.related_interaction_id,
                 "closure_outcome": interaction.closure_outcome,
                 "closed_at": interaction.closed_at.isoformat() if interaction.closed_at else None,
+                "next_check_at": interaction.next_check_at.isoformat() if interaction.next_check_at else None,
+                "last_checked_at": interaction.last_checked_at.isoformat() if interaction.last_checked_at else None,
+                "reminder_count": interaction.reminder_count,
+                "waiting_on": interaction.waiting_on,
             },
         )
         self._conn.commit()
@@ -120,6 +130,10 @@ class SqliteInteractionRepository(InteractionRepository):
             related_interaction_id=row["related_interaction_id"],
             closure_outcome=row["closure_outcome"],
             closed_at=_parse_dt(row["closed_at"]),
+            next_check_at=_parse_dt(row["next_check_at"]),
+            last_checked_at=_parse_dt(row["last_checked_at"]),
+            reminder_count=row["reminder_count"] if row["reminder_count"] is not None else 0,
+            waiting_on=row["waiting_on"],
         )
 
     def get(self, interaction_id: str) -> Optional[Interaction]:
@@ -175,5 +189,17 @@ class SqliteInteractionRepository(InteractionRepository):
             WHERE task_status IN ('open', 'in_progress') AND due_at IS NULL
             ORDER BY created_at ASC
             """
+        ).fetchall()
+        return [self._row_to_interaction(r) for r in rows]
+
+    def due_for_check(self, as_of: dt.datetime) -> Iterable[Interaction]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM interactions
+            WHERE task_status IN ('open', 'in_progress')
+              AND next_check_at IS NOT NULL AND next_check_at <= ?
+            ORDER BY next_check_at ASC
+            """,
+            (as_of.isoformat(),),
         ).fetchall()
         return [self._row_to_interaction(r) for r in rows]

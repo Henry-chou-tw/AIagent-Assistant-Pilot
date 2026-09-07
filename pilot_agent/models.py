@@ -24,6 +24,15 @@ ACTION_TYPES = (
 
 TASK_STATUSES = ("open", "in_progress", "done", "cancelled", "unknown")
 
+# 2026-09-07 (Follow-up Runtime Closure round): who/what this interaction is
+# currently blocked on, if anything. Deliberately separate from task_status --
+# task_status says open/in_progress/done; waiting_on says *why* it's still
+# open, so Daily Close can stop treating every open item as "stuck on Henry"
+# (Henry's explicit complaint about the v1 Daily Close). None/null is a
+# legitimate, honest value when this isn't determinable or doesn't apply --
+# never defaulted to "henry" just because it's easier.
+WAITING_ON_VALUES = ("henry", "external")
+
 
 @dataclasses.dataclass
 class ToolExecution:
@@ -48,6 +57,19 @@ class Interaction:
     domain: Optional[str] = None
     agent_response: Optional[str] = None
     due_at: Optional[dt.datetime] = None  # deadline/reminder/calendar time if stated; never invented (see schema)
+
+    # 2026-09-07 (Follow-up Runtime Closure round): due_at is the thing's OWN
+    # time (a deadline Henry/the world stated). next_check_at is a *different*
+    # axis -- when the SYSTEM should next actively check/remind on this item.
+    # These must never be conflated (GPT's independent-verification finding):
+    # e.g. "廠商明天親送,上午/下午稍後補充" has due_at=None (no confirmed
+    # delivery time to invent) but next_check_at can still legitimately be
+    # set to "tomorrow morning" -- that's the Pilot deciding when to go ask
+    # again, not a claim about when the delivery itself will happen.
+    next_check_at: Optional[dt.datetime] = None
+    last_checked_at: Optional[dt.datetime] = None  # last time follow-up-watch actually fired on this row
+    reminder_count: int = 0  # how many times follow-up-watch has nagged about this row; caps the backoff, see follow_up_watch.py
+    waiting_on: Optional[str] = None  # "henry" | "external" | None -- see WAITING_ON_VALUES above
 
     model_used: Optional[str] = None
     input_tokens: Optional[int] = None
@@ -90,6 +112,10 @@ class Interaction:
             "domain": self.domain,
             "agent_response": self.agent_response,
             "due_at": self.due_at.isoformat() if self.due_at else None,
+            "next_check_at": self.next_check_at.isoformat() if self.next_check_at else None,
+            "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else None,
+            "reminder_count": self.reminder_count,
+            "waiting_on": self.waiting_on,
             "model_used": self.model_used,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,

@@ -48,3 +48,13 @@ class InteractionRepository(abc.ABC):
     def open_without_due_date(self) -> Iterable[Interaction]:
         """Open/in_progress interactions with due_at still null -- e.g.
         Morning Brief's "尚未排時間的重要 Todo"."""
+
+    @abc.abstractmethod
+    def due_for_check(self, as_of) -> Iterable[Interaction]:
+        """Open/in_progress interactions with next_check_at IS NOT NULL
+        AND next_check_at <= as_of. Powers follow-up-watch (2026-09-07,
+        Follow-up Runtime Closure round) -- the hourly job that actively
+        re-checks/reminds on follow-ups, as opposed to due_at which just
+        powers the twice-daily Morning Brief/Daily Close summaries. Never
+        returns done/cancelled rows even if their next_check_at was left
+        stale from before closure."""

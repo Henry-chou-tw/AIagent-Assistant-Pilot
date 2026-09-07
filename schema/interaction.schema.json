@@ -218,6 +218,40 @@
       ],
       "format": "date-time",
       "description": "When this item is actually due/relevant (deadline, reminder time, or calendar time), if Henry stated or clearly implied one. Null when not determinable -- never invented (Henry's Functional Spec v1.0 SS4.2: do not fabricate a deadline he did not give). Powers the 08:15 Morning Brief / 22:00 Daily Close; a suggested-but-unconfirmed date must stay out of this field until Henry confirms it."
+    },
+    "next_check_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "When the SYSTEM should next actively check/remind on this item -- a different axis from due_at. due_at is the thing's own deadline/time (never invented). next_check_at is purely an operational scheduling choice by the Pilot (e.g. 'ask again tomorrow morning whether AM/PM was confirmed') and must never be conflated with a claim about when the real-world event itself happens. Null when there is nothing to actively track later (e.g. knowledge/idea records), or when task_status is done/cancelled. Powers follow-up-watch (hourly Task Scheduler job)."
+    },
+    "last_checked_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "Last time follow-up-watch actually fired a reminder for this row. Null if never checked."
+    },
+    "reminder_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "How many times follow-up-watch has sent a reminder for this row. Used to back off and eventually stop auto-reminding (see pilot_agent/follow_up_watch.py) so the same item is never nagged indefinitely."
+    },
+    "waiting_on": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "henry",
+        "external",
+        null
+      ],
+      "description": "What/who this item is currently blocked on, if anything: 'external' = waiting on someone/something outside Henry (a vendor, a colleague, an event that hasn't happened yet); 'henry' = the Pilot needs more information/a decision from Henry himself to proceed. Null when not determinable or not applicable -- never guessed just to fill the field. Lets Daily Close stop treating every open item as \\\"stuck on Henry\\\" (Functional Spec v1.0 SS5.3's Open Loop distinction, simplified for Pilot v1)."
     }
   },
   "additionalProperties": false

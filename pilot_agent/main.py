@@ -23,9 +23,10 @@ import json
 import sys
 
 from .config import database_path
+from .follow_up_watch import run_follow_up_watch
 from .ids import generate_id
 from .intake_classifier import classify
-from .models import ACTION_TYPES, TASK_STATUSES, Interaction
+from .models import ACTION_TYPES, TASK_STATUSES, WAITING_ON_VALUES, Interaction
 from .notifications import DiscordPushError, send_message
 from .providers.claude_provider import ClaudeProvider
 from .storage import db as db_module
@@ -45,6 +46,8 @@ def cmd_handle(args: argparse.Namespace) -> None:
     result = classify(model, args.input)
 
     due_at = dt.datetime.fromisoformat(result.due_at) if result.due_at else None
+    next_check_at = dt.datetime.fromisoformat(result.next_check_at) if result.next_check_at else None
+    waiting_on = result.waiting_on if result.waiting_on in WAITING_ON_VALUES else None
 
     interaction = Interaction(
         id=generate_id("interaction"),
@@ -55,6 +58,8 @@ def cmd_handle(args: argparse.Namespace) -> None:
         action_type=result.action_type,
         domain=result.domain,
         due_at=due_at,
+        next_check_at=next_check_at,
+        waiting_on=waiting_on,
         agent_response=result.response_text,
         model_used=result.model_used,
         input_tokens=result.input_tokens,
@@ -108,6 +113,86 @@ def cmd_close(args: argparse.Namespace) -> None:
         interaction.closed_at = dt.datetime.now(dt.timezone.utc)
     repo.save(interaction)
     print(f"closed {args.id} as {args.status}")
+
+
+def cmd_follow_up_advance(args: argparse.Namespace) -> None:
+    """Advance a multi-stage follow-up to its next checkpoint (2026-09-07,
+    Follow-up Runtime Closure round -- Henry's item 3: 克靈固消毒劑 case).
+
+    Deliberately reuses the existing related_interaction_id field (no new
+    table): this closes the CURRENT interaction (the checkpoint that just
+    got resolved, e.g. "明天上午/下午確認了") and, if --next-input is
+    given, creates a brand-new linked Interaction for the NEXT checkpoint
+    (e.g. "確認實際送達"), with its own independent due_at/next_check_at/
+    waiting_on -- never overwriting or reusing the parent's due_at for a
+    different real-world fact. follow-up-watch doesn't need to know
+    anything about "stages"; it just sees another open row with its own
+    next_check_at."""
+    repo = _repository()
+    parent = repo.get(args.id)
+    if parent is None:
+        print(f"error: no interaction with id {args.id}", file=sys.stderr)
+        sys.exit(1)
+
+    parent.task_status = args.close_parent_status
+    parent.closure_outcome = args.outcome
+    parent.next_check_at = None  # this checkpoint is resolved; stop watch from re-firing on it
+    if args.close_parent_status in ("done", "cancelled"):
+        parent.closed_at = dt.datetime.now(dt.timezone.utc)
+    repo.save(parent)
+    print(f"advanced {args.id}: closed as {args.close_parent_status} ({args.outcome})")
+
+    if not args.next_input:
+        return
+
+    next_due_at = dt.datetime.fromisoformat(args.next_due_at) if args.next_due_at else None
+    next_check_at = dt.datetime.fromisoformat(args.next_check_at) if args.next_check_at else None
+    next_waiting_on = args.next_waiting_on if args.next_waiting_on in WAITING_ON_VALUES else None
+
+    child = Interaction(
+        id=generate_id("interaction"),
+        created_at=dt.datetime.now(dt.timezone.utc),
+        source=parent.source,
+        channel_ref=parent.channel_ref,
+        raw_input=args.next_input,
+        action_type=args.next_action_type,
+        domain=parent.domain,
+        due_at=next_due_at,
+        next_check_at=next_check_at,
+        waiting_on=next_waiting_on,
+        agent_response=None,
+        purpose="follow_up_advance",
+        task_status="open",
+        related_interaction_id=parent.id,
+    )
+    repo.save(child)
+    print(f"created follow-up checkpoint {child.id} (related_interaction_id={parent.id})")
+
+
+def cmd_follow_up_watch(args: argparse.Namespace) -> None:
+    """Hourly Task Scheduler entrypoint (2026-09-07, Follow-up Runtime
+    Closure round -- Henry's item 5/6): the REAL follow-up due-check,
+    independent of the fixed 08:15/22:00 summaries. See
+    follow_up_watch.py for the anti-spam backoff design."""
+    repo = _repository()
+    now = dt.datetime.now().astimezone()
+
+    if args.no_send:
+        def sender(message: str) -> None:
+            print("--- (--no-send,以下訊息未實際發送到 Discord) ---")
+            print(message)
+    else:
+        sender = None  # run_follow_up_watch defaults this to the real notifications.send_message
+
+    outcomes = run_follow_up_watch(repo, now, send=sender)
+
+    if not outcomes:
+        print("沒有到期需要追蹤的項目,沒有發送任何訊息。")
+        return
+
+    for outcome in outcomes:
+        tag = "(已達提醒上限,已停止自動追蹤,轉為需要 Henry 關注)" if outcome.backed_off else ""
+        print(f"{outcome.interaction_id}\t第 {outcome.reminder_count_after} 次提醒\t{outcome.raw_input_excerpt} {tag}")
 
 
 def cmd_list_open(args: argparse.Namespace) -> None:
@@ -180,44 +265,78 @@ def _build_morning_brief(repo, now: dt.datetime) -> str:
     return "\n\n".join(sections)
 
 
-def _build_daily_close(repo, now: dt.datetime) -> str:
-    """Functional Spec v1.0 SS5.3 simplified for Pilot v1: this repo has
-    no 'Open Loop blocked on Henry' object type yet (that's a Foundation
-    schema gap noted in the conflict-check report, not built here), so
-    this reports a plain snapshot of what's still open at day's end,
-    rather than the stricter "only send if something is stuck on Henry"
-    behaviour the full spec describes. Says so explicitly rather than
-    pretending to be the fuller SS5.3 behaviour."""
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+def _bucket_by_waiting_on(items):
+    """Split open items into (henry, external, unclassified) per
+    Interaction.waiting_on (2026-09-07, Follow-up Runtime Closure round --
+    Henry's item 7: Daily Close must stop treating every open item as
+    "stuck on Henry"). unclassified (waiting_on is None) covers rows from
+    before this field existed, or ones the classifier genuinely couldn't
+    determine -- kept visible (conservative, matches old behaviour)
+    rather than silently dropped, but reported honestly as unclassified,
+    not mislabeled as either bucket."""
+    henry_items, external_items, unclassified_items = [], [], []
+    for item in items:
+        if item.waiting_on == "henry":
+            henry_items.append(item)
+        elif item.waiting_on == "external":
+            external_items.append(item)
+        else:
+            unclassified_items.append(item)
+    return henry_items, external_items, unclassified_items
 
+
+def _build_daily_close(repo, now: dt.datetime):
+    """Functional Spec v1.0 SS5.3, Pilot v1 minimal-viable version
+    (2026-09-07, Follow-up Runtime Closure round). Still not the full
+    spec's Open Loop object type (no separate schema object, no richer
+    blocked-reason taxonomy) -- that's an honestly-disclosed limitation,
+    not built here. What THIS round adds: items are bucketed by
+    waiting_on so a purely "waiting on some vendor" item no longer reads
+    as "blocked on Henry", and the Discord push is now conditional --
+    it only actually sends when something in the needs-Henry bucket is
+    non-empty. Returns (message_text, needs_henry_attention) so the
+    caller can implement that conditional send without re-deriving the
+    bucketing logic."""
     overdue_items = list(repo.overdue(now))
     no_date_open = [
         i for i in repo.open_without_due_date()
         if i.effective_action_type() in ("todo", "reminder", "follow_up")
     ]
+    all_open = overdue_items + no_date_open
+
+    henry_items, external_items, unclassified_items = _bucket_by_waiting_on(all_open)
+    needs_henry_attention = bool(henry_items) or bool(unclassified_items)
 
     sections = [f"**22:00 今日總結** — {now.strftime('%Y-%m-%d (%a)')}"]
 
-    if not overdue_items and not no_date_open:
+    def _line(i):
+        if i.due_at is not None:
+            return f"- (原訂 {i.due_at.strftime('%Y-%m-%d %H:%M')}) {(i.raw_input or '').strip()[:70]}"
+        return _brief_line(i, show_due=False)
+
+    if not all_open:
         sections.append("今天沒有卡住的事項,也沒有逾期項目。")
     else:
-        if overdue_items:
+        if henry_items:
+            sections.append("**需要你補資訊/決定**\n" + "\n".join(_line(i) for i in henry_items))
+        if unclassified_items:
             sections.append(
-                "**逾期未結**\n"
-                + "\n".join(f"- (原訂 {i.due_at.strftime('%Y-%m-%d %H:%M')}) "
-                             f"{(i.raw_input or '').strip()[:70]}" for i in overdue_items)
+                "**尚未分類（沿用舊行為誠實列出，非本輪判斷範圍）**\n"
+                + "\n".join(_line(i) for i in unclassified_items)
             )
-        if no_date_open:
+        if external_items:
             sections.append(
-                "**還沒排時間、仍待處理**\n"
-                + "\n".join(_brief_line(i, show_due=False) for i in no_date_open)
+                "**純資訊：等待外部回覆/事件中（不需要你現在處理）**\n"
+                + "\n".join(_line(i) for i in external_items)
             )
+        if not needs_henry_attention:
+            sections.append("以上都只是等外部而已,今天沒有真的卡住你的事項——這則不會實際發送到 Discord。")
 
     sections.append(
-        "（註：這是還開著的事項快照,不是規格書 SS5.3 原本設計的「只在真的卡住 Henry 時才發」"
-        "那種 Open Loop 判斷 —— Pilot v1 還沒有 Open Loop 這個物件類型,先用簡化版。）"
+        "（註：這仍是 Pilot v1 的簡化版——還沒有規格書 SS5.3 原本設計的完整 Open Loop 物件"
+        "類型,但已經會依 waiting_on 區分「等外部」跟「卡住你」,只在真的有事項需要你注意時才發送。）"
     )
-    return "\n\n".join(sections)
+    return "\n\n".join(sections), needs_henry_attention
 
 
 def cmd_morning_brief(args: argparse.Namespace) -> None:
@@ -237,9 +356,17 @@ def cmd_morning_brief(args: argparse.Namespace) -> None:
 def cmd_daily_close(args: argparse.Namespace) -> None:
     repo = _repository()
     now = dt.datetime.now().astimezone()
-    message = _build_daily_close(repo, now)
+    message, needs_henry_attention = _build_daily_close(repo, now)
     print(message)
     if args.no_send:
+        return
+    if not needs_henry_attention:
+        # Conditional Daily Close (Henry's item 7): nothing in this run
+        # actually needs his attention (open items, if any, are all
+        # purely waiting on something external) -- don't push a Discord
+        # message just to say "nothing's wrong". This is the difference
+        # from the old v1 behaviour, which always sent a snapshot.
+        print("（沒有需要 Henry 注意的事項,本次不發送 Discord 訊息。）")
         return
     try:
         send_message(message)
@@ -282,6 +409,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_close = sub.add_parser("daily-close", help="Build (and by default send) the 22:00 end-of-day summary")
     p_close.add_argument("--no-send", action="store_true", help="Print only, don't post to Discord (for manual testing)")
     p_close.set_defaults(func=cmd_daily_close)
+
+    p_watch = sub.add_parser(
+        "follow-up-watch",
+        help="Hourly Task Scheduler entrypoint: check next_check_at, send reminders, back off (never spams)",
+    )
+    p_watch.add_argument("--no-send", action="store_true", help="Print reminder text instead of posting to Discord (for manual testing)")
+    p_watch.set_defaults(func=cmd_follow_up_watch)
+
+    p_advance = sub.add_parser(
+        "follow-up-advance",
+        help="Resolve one follow-up checkpoint and optionally create the next linked checkpoint (multi-stage tracking)",
+    )
+    p_advance.add_argument("--id", required=True, help="id of the interaction/checkpoint being resolved")
+    p_advance.add_argument("--outcome", required=True, help="What was learned/resolved, verbatim")
+    p_advance.add_argument("--close-parent-status", default="done", choices=list(TASK_STATUSES))
+    p_advance.add_argument("--next-input", default=None, help="If given, creates a new linked checkpoint with this raw_input")
+    p_advance.add_argument("--next-action-type", default="follow_up", choices=list(ACTION_TYPES))
+    p_advance.add_argument("--next-due-at", default=None, help="ISO 8601; only if Henry/the source actually gave this time")
+    p_advance.add_argument("--next-check-at", default=None, help="ISO 8601; when the Pilot should next check on the new checkpoint")
+    p_advance.add_argument("--next-waiting-on", default=None, choices=list(WAITING_ON_VALUES))
+    p_advance.set_defaults(func=cmd_follow_up_advance)
 
     return parser
 
