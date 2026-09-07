@@ -1,0 +1,19 @@
+# Data is Henry's own -- kept local, not committed by default. Back it
+# up/export deliberately (see README.md), don't rely on git history for
+# durability of interaction data.
+data/pilot.db
+data/pilot.db-journal
+data/pilot.db-wal
+data/pilot.db-shm
+
+# Never commit secrets. If a .env file is ever added for local config,
+# it must never be tracked.
+.env
+*.env
+*token*.txt
+*secret*
+
+__pycache__/
+*.pyc
+.venv/
+venv/
