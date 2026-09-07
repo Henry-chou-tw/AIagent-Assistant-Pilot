@@ -23,6 +23,7 @@ import json
 import sys
 
 from .config import database_path
+from .context_resolution import apply_resolution, get_candidates
 from .follow_up_watch import run_follow_up_watch
 from .ids import generate_id
 from .intake_classifier import classify
@@ -39,11 +40,17 @@ def _repository() -> SqliteInteractionRepository:
     return SqliteInteractionRepository(conn)
 
 
-def cmd_handle(args: argparse.Namespace) -> None:
-    repo = _repository()
-    model = ClaudeProvider()
-
-    result = classify(model, args.input)
+def _create_new_interaction(
+    repo, model, *, source, channel_ref, raw_input,
+    resolution_type=None, resolution_confidence=None, resolution_reason=None,
+) -> Interaction:
+    """The original (pre-2026-09-07-milestone) `handle` behaviour: run
+    intake classification and persist a brand new Interaction. Reused for
+    both "there were no open candidates at all" and "resolve_context
+    itself decided this is NEW_INTERACTION" -- the resolution_* fields are
+    only non-None in the latter case, giving an honest audit trail either
+    way (see context_resolution.py's module docstring)."""
+    result = classify(model, raw_input)
 
     due_at = dt.datetime.fromisoformat(result.due_at) if result.due_at else None
     next_check_at = dt.datetime.fromisoformat(result.next_check_at) if result.next_check_at else None
@@ -52,9 +59,9 @@ def cmd_handle(args: argparse.Namespace) -> None:
     interaction = Interaction(
         id=generate_id("interaction"),
         created_at=dt.datetime.now(dt.timezone.utc),
-        source=args.source,
-        channel_ref=args.channel_ref,
-        raw_input=args.input,
+        source=source,
+        channel_ref=channel_ref,
+        raw_input=raw_input,
         action_type=result.action_type,
         domain=result.domain,
         due_at=due_at,
@@ -68,14 +75,61 @@ def cmd_handle(args: argparse.Namespace) -> None:
         estimated_cost_usd=result.estimated_cost_usd,
         purpose="intake_classification",
         task_status="open" if result.action_type != "unknown" else "unknown",
+        resolution_type=resolution_type,
+        resolution_confidence=resolution_confidence,
+        resolution_reason=resolution_reason,
     )
     repo.save(interaction)
+    return interaction
 
-    # Machine-readable line first (for programmatic callers), then the
-    # plain response text a relaying session should actually send back.
-    print(json.dumps({"id": interaction.id, "action_type": interaction.action_type, "domain": interaction.domain}))
+
+def cmd_handle(args: argparse.Namespace) -> None:
+    """2026-09-07, Contextual Follow-up Resolution milestone: before
+    treating this as a brand new message, check whether it's actually
+    updating/advancing/closing an open follow-up the Pilot already has
+    (see context_resolution.py). Henry never has to name an interaction
+    id or pick a command by hand for the common case -- `handle` is still
+    the only thing CLAUDE.md's relay session ever needs to call."""
+    repo = _repository()
+    model = ClaudeProvider()
+    now = dt.datetime.now().astimezone()
+
+    candidates = get_candidates(repo, args.input, now)
+
+    if not candidates:
+        # Item 6/7: nothing open and recent to consider -- straight to
+        # normal classification, exactly as before this milestone.
+        interaction = _create_new_interaction(repo, model, source=args.source, channel_ref=args.channel_ref, raw_input=args.input)
+        print(json.dumps({"id": interaction.id, "action_type": interaction.action_type, "domain": interaction.domain}))
+        print("---")
+        print(interaction.agent_response)
+        return
+
+    resolution = model.resolve_context(raw_input=args.input, candidates=candidates, now_iso=now.isoformat())
+
+    if resolution.resolution_type == "NEW_INTERACTION":
+        interaction = _create_new_interaction(
+            repo, model, source=args.source, channel_ref=args.channel_ref, raw_input=args.input,
+            resolution_type=resolution.resolution_type,
+            resolution_confidence=resolution.confidence,
+            resolution_reason=resolution.reason,
+        )
+        print(json.dumps({"id": interaction.id, "action_type": interaction.action_type, "domain": interaction.domain}))
+        print("---")
+        print(interaction.agent_response)
+        return
+
+    # UPDATE_EXISTING / ADVANCE_FOLLOW_UP / CLOSE_EXISTING / AMBIGUOUS all
+    # go through the mutation-safety + confidence gate in apply_resolution
+    # -- it re-validates everything itself and never trusts resolution_type
+    # or confidence at face value.
+    outcome = apply_resolution(
+        repo, resolution, candidates,
+        raw_input=args.input, source=args.source, channel_ref=args.channel_ref, now=now,
+    )
+    print(json.dumps({"id": outcome.interaction_id, "action_type": outcome.action_type, "resolution_type": outcome.resolution_type}))
     print("---")
-    print(interaction.agent_response)
+    print(outcome.response_text)
 
 
 def cmd_correct(args: argparse.Namespace) -> None:

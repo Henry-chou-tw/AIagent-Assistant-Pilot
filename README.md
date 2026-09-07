@@ -184,6 +184,48 @@ follow-up,不會硬塞進單一 `due_at`/`next_check_at`,而是用既有的 `rel
 設每天 08:15 / 22:00 / **每小時**分別執行這三個 `.bat`)——這步驟目前沒有辦法從這個對話
 自動幫 Henry 完成,Task Scheduler 是否已經設定、有沒有正常觸發,都需要 Henry 自己確認。
 
+### 上下文自動關聯（Contextual Follow-up Resolution，2026-09-07 新增）
+
+上面「多階段追蹤」一節描述的 `follow-up-advance` 是**手動**指令；這一輪新增的是讓 `handle`
+**自己**判斷一則新訊息是不是在接續一筆還開著的追蹤，Henry 不需要重複講關鍵字（例如
+「克靈固」），也不需要知道任何 Interaction id：
+
+```
+Discord 訊息 → 程式碼查最近開著的候選（不吃整個資料庫）→ 有候選才多呼叫一次模型做
+結構化判斷 → 程式碼校驗（confidence/候選 id 是否合法/目標是否還開著）→ 只有全部通過
+才真的更新/結案 → 不確定就回一句最小化的澄清問句,不猜、不動舊資料
+```
+
+**候選查詢**（`pilot_agent/context_resolution.py` 的 `get_candidates()`）是純程式碼、
+決定性的：只查 `task_status` 是 `open`/`in_progress`、`action_type` 是
+`follow_up`/`reminder`/`todo`、最近 72 小時內有活動的記錄，用字元 bigram 的 Jaccard
+相似度（不需要中文斷詞套件）+ 最近活動時間 + 是否臨近 `next_check_at` 做排序,最多取前
+5 筆,各自配一個**這次呼叫才有效的本地代號**（`C1`、`C2`…）——模型永遠看不到真正的
+Interaction id,結構上就不可能自己編一個 id 出來。
+
+**信心門檻**（confidence gate）完全在程式碼裡把關,不是相信模型自己講的話：只有模型回傳
+`confidence="high"`、`resolution_type` 不是 `AMBIGUOUS`、而且給的候選代號確實來自這次
+查出的候選集合、目標記錄重新查詢後仍然是 `open`/`in_progress`,才允許真的寫入任何變更。
+任何一關沒過,一律當作 `AMBIGUOUS` 處理:自動回一句最小化的澄清問句（最多列 3 個候選,
+不會把整串清單丟給 Henry）,不更新、不結案任何現有記錄。這個設計原則是明講的：**錯連
+（false link）比漏連（missed link）更危險**——寧可多問一句,也不要把回覆誤連到錯的追蹤
+上、甚至誤結案錯的事項。
+
+每一次自動判斷,不管是真的更新了舊記錄、開了下一階段、結案,還是判成 `AMBIGUOUS`,都會在
+`data/pilot.db` 留下一筆帶 `resolution_type` / `resolution_confidence` / `resolution_reason`
+的稽核記錄（重用既有的 `related_interaction_id` 欄位指向被連到的舊記錄）——這是最小可行的
+稽核軌跡,不是完整的 event sourcing（沒有記錄「變更前/變更後」的完整欄位快照）,但足夠讓
+Henry 事後知道「這次是 AI 把『下午會送』自動連到哪一筆」,也是之後修正錯誤連結時
+`correct --id <稽核記錄 id>` 的依據。**這輪刻意不做**一個完整的 undo/reopen 引擎——如果
+Henry 事後說「不對,我說的是另一筆」,目前的做法是保留原始輸入、原始（錯誤）的連結目標、
+加上 Henry 的更正說明,讓「Daily Learning Review」（下一個里程碑）之後可以回頭處理,而不是
+自動幫 Henry 復原資料。
+
+已知的誠實簡化：如果 Henry 只講了「下午」這種粗略時段、沒有給確切幾點,新開的下一階段
+`due_at` 會留 null（不會自己編一個像 15:00 這種看起來很篤定的時間),`next_check_at` 改用
+既有的 `next_check_hint`（`same_day`/`next_day`/`later`）分類機制去排下一次回頭確認的時間
+——沒有另外做一套「粗略時段」的資料表示法,這是刻意的最小可行設計,不是遺漏。
+
 ### 已知簡化（誠實記錄）
 
 - Morning Brief／Daily Close／follow-up-watch 依賴新加的 `due_at` 欄位（規格書 SS4.1 的
@@ -197,11 +239,11 @@ follow-up,不會硬塞進單一 `due_at`/`next_check_at`,而是用既有的 `rel
   設計的完整 Open Loop 物件類型(沒有獨立 schema object,`waiting_on` 只是 null/henry/external
   三值,不是完整的封鎖原因分類)——Pilot v1 先用這個最小可行版本,`daily-close` 指令本身的
   輸出也會誠實註明這個簡化。
-- 多階段追蹤（`follow-up-advance`）目前**不會自動判斷**哪個 Discord 回覆對應到哪一筆開著
-  的追蹤——這個判斷交給即時 Channels session 用自身的自然語言理解去決定要不要呼叫
-  `follow-up-advance`（見 `CLAUDE.md`），Pilot 本身沒有對話串（thread）追蹤機制。如果
-  session 判斷錯誤或漏判，這筆追蹤就會停在原本的階段，需要 Henry 自己發現並手動用
-  `correct` / `follow-up-advance` 修正。
+- 多階段追蹤的自動關聯（見下方「上下文自動關聯」一節）目前是**單輪、無記憶的候選比對**：
+  每次 `handle` 呼叫都是重新查一次「最近開著的項目」，不會累積「這個 Discord 頻道/DM 剛剛
+  在聊哪一筆」這種對話串狀態，也不會學習 Henry 過去的更正模式（那是之後 Daily Learning
+  Loop 里程碑的範圍，這輪刻意不做）。如果自動判斷錯誤或被判成 `AMBIGUOUS` 而多問了一句,
+  需要 Henry 自己回答或事後用 `correct` 修正——見下方「錯連比漏連更危險」的設計原則。
 - `follow-up-watch` 的重試間隔（6 小時）跟自動提醒上限（3 次）目前是寫死的常數
   （`pilot_agent/follow_up_watch.py` 的 `RETRY_INTERVAL` / `MAX_AUTO_REMINDERS`），還沒有
   依 domain/緊急程度做差異化，也還沒有真實使用數據可以校準這兩個數字合不合理。

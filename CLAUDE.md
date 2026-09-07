@@ -39,23 +39,30 @@ session。
 .venv/Scripts/python.exe -m pilot_agent.main close --id <id> --status done|cancelled|in_progress --outcome "<結果原文>"
 ```
 
-## 如果 Henry 的訊息是在回覆一筆還開著的多階段追蹤（2026-09-07 新增）
+## 多階段追蹤的自動關聯（2026-09-07 新增，2026-09-07 Contextual Follow-up
+Resolution 這輪起改成全自動 —— 這個 session 不需要再手動判斷）
 
 有些 follow_up 是分階段的（例如：今天先追蹤「明天到底上午還是下午送」，
-等 Henry 提供了這個資訊，才輪到追蹤「實際是否送達」）。如果你判斷 Henry
-這則訊息明顯是在回覆一筆**最近的、還開著的 follow_up/reminder/todo**（可以
-先用 `list-open --action-type follow_up` 之類的指令確認有沒有這種還開著
-的項目、內容是否對得上),才執行：
+等 Henry 提供了這個資訊，才輪到追蹤「實際是否送達」）。**這個判斷現在完全
+在 `handle` 指令內部自動完成**：`cmd_handle` 會先用程式碼查詢最近還開著的
+follow_up/reminder/todo 當候選（`pilot_agent/context_resolution.py` 的
+`get_candidates()`），如果有候選才另外呼叫一次模型做結構化判斷
+（`resolve_context()`），只有在模型回傳 `confidence="high"` 且候選 id 確實
+來自這次查詢出的候選集合時，程式碼才會真的更新/結案舊記錄；只要有任何
+不確定，一律回傳 `AMBIGUOUS`，程式碼會自動回一句最小化的澄清問句（例如
+「你說的是「克靈固」還是另外一筆追蹤？」），**不會**去猜、也不會結掉任何
+既有記錄。你這個 session（即時 Discord relay）**不需要**也**不應該**自己
+判斷「這是不是在回覆舊的追蹤」——就跟平常一樣，永遠只呼叫 `handle`，把
+`---` 之後的文字原樣送回 Discord 即可（見上面第一節）；`handle` 印出的
+`---` 之後的內容，不管是全新分類的回覆、自動接續追蹤的回覆、還是澄清
+問句，格式都一樣，你不用區分。
 
-```
-.venv/Scripts/python.exe -m pilot_agent.main follow-up-advance --id <那筆還開著的 id> --outcome "<Henry 提供的新資訊，原文>" [--next-input "<下一階段要追蹤的內容>" --next-check-at <ISO 8601，只有 Henry 這次真的給了具體時間才填> --next-waiting-on henry|external]
-```
-
-這一步**判斷要謹慎，不確定就不要用**——不確定 Henry 這則訊息是不是在回覆
-某筆舊的追蹤時，直接照平常流程跑 `handle` 當作一則新訊息即可，不要為了
-硬要串起來而亂猜。`--next-check-at` 只有在 Henry/對方這次真的給了具體時間
-才能填，沒有具體時間就留空，交給之後的 `follow-up-watch` 或 Daily Close
-去處理，不要自己編。
+`follow-up-advance` 這個指令**沒有被移除**，但現在只在自動判斷失誤、需要
+你（Henry）事後手動修正串接時才用（見下面「如果 Henry 更正了分類」附近
+的 `correct` 指令——每一次自動關聯，不管對錯，都會在 `data/pilot.db` 留下
+一筆帶 `resolution_type`/`resolution_confidence`/`resolution_reason` 的稽核
+記錄，如果 Henry 事後說「不對，我說的是另一筆」，對那筆稽核記錄的 id 呼叫
+`correct` 就能留下修正紀錄，不需要、也還沒有實作一個完整的 undo 機制）。
 
 ## 主動通知 / 主動追蹤（2026-09-07 新增，都不是這個即時 session 的工作）
 
@@ -111,5 +118,14 @@ session：
   `pilot_agent/followup_timing.py` 的固定策略算出來。看到「今天稍晚會
   補充」這類詞（稍後/晚點/待會/稍晚/馬上/等一下/今天再/今天會）要判斷成
   `"same_day"`，不能因為訊息裡同時出現「明天」字樣就誤判成 `"next_day"`
-  ——這是這輪修正的真實案例（克靈固消毒劑），改壞這條規則等於重新引入
   原本的錯誤。
+- （2026-09-07 Contextual Follow-up Resolution 這輪新增）`handle` 現在會
+  自動判斷一則新訊息是不是在接續一筆還開著的追蹤（不需要 Henry 重複講
+  「克靈固」這種關鍵字）。這條路徑遵守一個明確原則：**錯連（false link）
+  比漏連（missed link）更危險**——只有模型判斷 `confidence="high"` 而且
+  給的候選 id 確實來自程式碼這次查出的候選集合，才會真的更新/結掉舊記錄；
+  任何不確定（候選不只一個、候選 id 對不上、目標已經不是 open/in_progress）
+  一律回傳 `AMBIGUOUS`，只問一句最小化的澄清問句，不猜、不動舊資料。看到
+  `pilot_agent/context_resolution.py` 時不要為了「讓自動關聯更聰明」而放寬
+  這個 gate，也不要讓模型自己給的 candidate id 繞過程式碼裡的候選集合校驗
+  ——這個 gate 本身就是防止誤連的唯一防線。

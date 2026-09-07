@@ -37,11 +37,12 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Optional
+from typing import List, Optional
 
+from ..context_resolution import CANDIDATE_LIMIT
 from ..followup_timing import NEXT_CHECK_HINTS, compute_next_check_at
-from ..model_interface import ModelInterface, ModelResult
-from ..models import ACTION_TYPES
+from ..model_interface import CandidateSummary, ContextResolutionResult, ModelInterface, ModelResult
+from ..models import ACTION_TYPES, RESOLUTION_TYPES
 
 # 2026-09-07: 依 Henry 提供的原始規格書
 # Henry_AI_Organization_CEO_Office_Discord_V1_Functional_Specification_v1.0.docx
@@ -157,6 +158,67 @@ Henry 說：「克靈固環境及食品消毒劑,廠商剛剛回覆,經理明日
 
 重要：這次呼叫跟你平常的互動無關，不要使用任何檔案/程式碼工具，只需要根據下面這則訊息，直接輸出上述格式的文字回覆。"""
 
+def _build_resolution_prompt(now_iso: str, raw_input: str, candidates) -> str:
+    """2026-09-07, Contextual Follow-up Resolution milestone. `candidates`
+    is a List[CandidateSummary] that context_resolution.py already
+    retrieved and bounded (never the whole database) -- this prompt only
+    ever shows the model that fixed, small list, each tagged with a
+    throwaway local ref (C1, C2, ...) instead of a real interaction id,
+    so the model has nothing to invent an id from."""
+    lines = []
+    for c in candidates:
+        lines.append(
+            f"- {c.ref}: 「{c.raw_input_excerpt}」"
+            f"(action_type={c.action_type}, domain={c.domain or 'null'}, "
+            f"waiting_on={c.waiting_on or 'null'}, due_at={c.due_at or 'null'}, "
+            f"next_check_at={c.next_check_at or 'null'})"
+        )
+    candidate_block = "\n".join(lines)
+
+    return f"""你是 Henry 的 Assistant Pilot,現在時間(ISO 8601,本機時區)：{now_iso}。
+
+Henry 剛傳來一則新訊息。在正常分類之前,先判斷這則訊息**是不是在講一筆已經開著、還沒結束的追蹤**,
+而不是全新的事情。以下是最近還開著、跟這則訊息可能有關的候選(已經先由程式碼篩選過,最多 {CANDIDATE_LIMIT} 筆,
+不是整個資料庫;每筆只有一個代號,不是真正的資料庫 id,你只能用這些代號回答,不能自己編一個 id)：
+
+{candidate_block}
+
+Henry 的新訊息：
+{raw_input}
+
+## 判斷規則(務必遵守,寧可問一句,不要連錯)
+1. **這是全新的事**(跟上面任何候選都無關)→ `resolution_type = "NEW_INTERACTION"`,`candidate_ref` 留 null。
+2. **這是在更新某一筆候選,但還沒有讓那筆結束或進入下一階段**(例如補充一個還不確定的細節)
+   → `resolution_type = "UPDATE_EXISTING"`,`candidate_ref` 填對應代號。
+3. **這是在回答某一筆候選原本在等的關鍵資訊,讓那筆可以往下一階段走**(例如原本在等「上午還是下午」,
+   現在有答案了)→ `resolution_type = "ADVANCE_FOLLOW_UP"`,`candidate_ref` 填對應代號,
+   `outcome_text` 填 Henry 這句話裡跟這件事有關的內容(儘量貼近原文)。
+   - 如果 Henry 這次**給了精確時間**(例如「明天下午 3 點」),`due_at` 填算出來的 ISO 8601 時間;
+     如果只有「下午」「早上」這種粗略時段、沒有精確幾點,**不要自己編一個時間**,`due_at` 留 null,
+     改用 `next_check_hint`(`"same_day"`/`"next_day"`/`"later"`)表示 Pilot 該什麼時候回頭確認。
+4. **這代表某一筆候選已經徹底結束了**(例如「已經送到了」「搞定了」)
+   → `resolution_type = "CLOSE_EXISTING"`,`candidate_ref` 填對應代號,`outcome_text` 填 Henry 的話,
+     `close_status` 通常是 `"done"`。
+5. **無法確定是候選裡的哪一筆,或者可能跟兩筆以上都沾得上邊**
+   → `resolution_type = "AMBIGUOUS"`,`ambiguous_refs` 填最可能的 2-3 個代號(不要全部列出)。
+   **這條規則的優先權很高:只要你不是很確定,就用這條,不要硬猜。連錯一筆(False Link)比多問一句
+   (Missed Link)更糟。** 例如訊息裡出現「廠商」兩個字,不代表它就是在講某個候選裡也提到「廠商」的事——
+   要看整句話的實際內容是不是真的同一件事,不要只因為字面重疊就連過去。
+
+## confidence 誠實回報
+`confidence` 只能是 `"high"`/`"medium"`/`"low"` 三選一:
+- 只有在你真的很確定(訊息內容跟候選的關聯明確、沒有其他候選會更合理)才回報 `"high"`——**只有
+  `"high"` 才會真的觸發自動更新資料**,`"medium"`/`"low"` 一律會被當成需要澄清處理,不會動到任何舊資料,
+  所以不確定的時候誠實回報低一點的信心,不會有壞處。
+
+## 輸出格式
+只需要輸出一個 ```json fenced block,格式必須恰好是：
+{{"resolution_type": "NEW_INTERACTION" 或 "UPDATE_EXISTING" 或 "ADVANCE_FOLLOW_UP" 或 "CLOSE_EXISTING" 或 "AMBIGUOUS", "candidate_ref": "C1" 或 null, "ambiguous_refs": ["C1","C2"] 或 [], "confidence": "high" 或 "medium" 或 "low", "reason": "簡短說明", "outcome_text": "..." 或 null, "due_at": "ISO 8601 字串" 或 null, "next_check_hint": "same_day" 或 "next_day" 或 "later" 或 null, "close_status": "done" 或 "cancelled"}}
+不要輸出 json block 以外的文字,這次呼叫的結果完全由程式碼決定要不要真的更新資料、要跟 Henry 說什麼。
+
+重要：不要使用任何檔案/程式碼工具,只需要根據上面的候選清單跟 Henry 的新訊息,直接輸出上述格式的 json。"""
+
+
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
 
@@ -239,6 +301,46 @@ class ClaudeProvider(ModelInterface):
             output_tokens=output_tokens,
             latency_ms=latency_ms,
             estimated_cost_usd=estimated_cost_usd,
+        )
+
+    def resolve_context(
+        self, *, raw_input: str, candidates: List[CandidateSummary], now_iso: str
+    ) -> ContextResolutionResult:
+        system_prompt = _build_resolution_prompt(now_iso, raw_input, candidates)
+
+        full_text, _in_tok, _out_tok, _cost = self._invoke_cli(system_prompt)
+
+        match = _JSON_BLOCK_RE.search(full_text)
+        if not match:
+            # Honest fallback: if the model didn't even produce a parseable
+            # json block, never guess -- treat as maximally ambiguous so
+            # apply_resolution's gate routes it to a safe clarifying
+            # question instead of silently doing nothing or crashing.
+            return ContextResolutionResult(resolution_type="AMBIGUOUS", confidence="low", reason="unparseable model output")
+
+        try:
+            parsed = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return ContextResolutionResult(resolution_type="AMBIGUOUS", confidence="low", reason="malformed json in model output")
+
+        resolution_type = parsed.get("resolution_type")
+        if resolution_type not in RESOLUTION_TYPES:
+            resolution_type = "AMBIGUOUS"
+
+        ambiguous_refs = parsed.get("ambiguous_refs") or []
+        if not isinstance(ambiguous_refs, list):
+            ambiguous_refs = []
+
+        return ContextResolutionResult(
+            resolution_type=resolution_type,
+            candidate_ref=parsed.get("candidate_ref"),
+            ambiguous_refs=[r for r in ambiguous_refs if isinstance(r, str)],
+            confidence=parsed.get("confidence", "low"),
+            reason=str(parsed.get("reason") or ""),
+            outcome_text=parsed.get("outcome_text"),
+            due_at=_validated_iso_datetime(parsed.get("due_at")),
+            next_check_hint=parsed.get("next_check_hint") if parsed.get("next_check_hint") in NEXT_CHECK_HINTS else None,
+            close_status=parsed.get("close_status") if parsed.get("close_status") in ("done", "cancelled") else "done",
         )
 
     def _invoke_cli(self, prompt: str):

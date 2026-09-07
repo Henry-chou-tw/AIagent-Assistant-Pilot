@@ -252,6 +252,41 @@
         null
       ],
       "description": "What/who this item is currently blocked on, if anything: 'external' = waiting on someone/something outside Henry (a vendor, a colleague, an event that hasn't happened yet); 'henry' = the Pilot needs more information/a decision from Henry himself to proceed. Null when not determinable or not applicable -- never guessed just to fill the field. Lets Daily Close stop treating every open item as \\\"stuck on Henry\\\" (Functional Spec v1.0 SS5.3's Open Loop distinction, simplified for Pilot v1)."
+    },
+    "resolution_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "NEW_INTERACTION",
+        "UPDATE_EXISTING",
+        "ADVANCE_FOLLOW_UP",
+        "CLOSE_EXISTING",
+        "AMBIGUOUS",
+        null
+      ],
+      "description": "2026-09-07 Contextual Follow-up Resolution milestone: what the candidate-retrieval + structured-resolution pipeline (pilot_agent/context_resolution.py) decided this record represents. Null for records created before this milestone, or when there were no open candidates to consider (straight to classification, same as before)."
+    },
+    "resolution_confidence": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "high",
+        "medium",
+        "low",
+        null
+      ],
+      "description": "Confidence the resolution model call reported for resolution_type. Code enforces a conservative gate on this independent of what the model claims: only 'high' confidence with a resolution_type other than AMBIGUOUS is allowed to mutate an existing interaction; anything else is treated as AMBIGUOUS (never partially trusted)."
+    },
+    "resolution_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Short free-text explanation from the resolution model call for why it reached this resolution_type (or, for AMBIGUOUS, which candidates were competing). Minimal audit trail -- not full event sourcing with before/after value diffs."
     }
   },
   "additionalProperties": false

@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 _SCHEMA_STATEMENTS = [
     """
@@ -40,7 +40,10 @@ _SCHEMA_STATEMENTS = [
         next_check_at TEXT,
         last_checked_at TEXT,
         reminder_count INTEGER NOT NULL DEFAULT 0,
-        waiting_on TEXT
+        waiting_on TEXT,
+        resolution_type TEXT,
+        resolution_confidence TEXT,
+        resolution_reason TEXT
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_interactions_action_type ON interactions(action_type)",
@@ -94,11 +97,28 @@ def _ensure_followup_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE interactions ADD COLUMN waiting_on TEXT")
 
 
+def _ensure_context_resolution_columns(conn: sqlite3.Connection) -> None:
+    """Additive migration (2026-09-07, Contextual Follow-up Resolution
+    milestone) for databases created before resolution_type/
+    resolution_confidence/resolution_reason existed. Same discipline as
+    the other _ensure_* migrations: only ADD COLUMN when missing, never
+    touches existing rows -- pre-existing rows read back as NULL for all
+    three, which is the honest "predates this milestone" value."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(interactions)")}
+    if "resolution_type" not in cols:
+        conn.execute("ALTER TABLE interactions ADD COLUMN resolution_type TEXT")
+    if "resolution_confidence" not in cols:
+        conn.execute("ALTER TABLE interactions ADD COLUMN resolution_confidence TEXT")
+    if "resolution_reason" not in cols:
+        conn.execute("ALTER TABLE interactions ADD COLUMN resolution_reason TEXT")
+
+
 def initialize_schema(conn: sqlite3.Connection) -> None:
     for statement in _SCHEMA_STATEMENTS:
         conn.execute(statement)
     _ensure_due_at_column(conn)
     _ensure_followup_columns(conn)
+    _ensure_context_resolution_columns(conn)
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
         (str(CURRENT_SCHEMA_VERSION),),

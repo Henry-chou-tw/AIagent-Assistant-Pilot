@@ -33,6 +33,15 @@ TASK_STATUSES = ("open", "in_progress", "done", "cancelled", "unknown")
 # never defaulted to "henry" just because it's easier.
 WAITING_ON_VALUES = ("henry", "external")
 
+# 2026-09-07 (Contextual Follow-up Resolution milestone): what cmd_handle
+# decided this interaction record represents, when it went through the
+# candidate-retrieval + structured-resolution pipeline in
+# context_resolution.py. RESOLUTION_TYPES mirrors the pipeline's possible
+# outcomes; None means this record predates the milestone or never went
+# through resolution (e.g. there were no open candidates to consider).
+RESOLUTION_TYPES = ("NEW_INTERACTION", "UPDATE_EXISTING", "ADVANCE_FOLLOW_UP", "CLOSE_EXISTING", "AMBIGUOUS")
+RESOLUTION_CONFIDENCE_VALUES = ("high", "medium", "low")
+
 
 @dataclasses.dataclass
 class ToolExecution:
@@ -70,6 +79,17 @@ class Interaction:
     last_checked_at: Optional[dt.datetime] = None  # last time follow-up-watch actually fired on this row
     reminder_count: int = 0  # how many times follow-up-watch has nagged about this row; caps the backoff, see follow_up_watch.py
     waiting_on: Optional[str] = None  # "henry" | "external" | None -- see WAITING_ON_VALUES above
+
+    # 2026-09-07 (Contextual Follow-up Resolution milestone): audit trail
+    # for automatic candidate-resolution decisions (see
+    # pilot_agent/context_resolution.py). None for records that never went
+    # through the resolution pipeline. This is deliberately a minimal
+    # audit trail (decision + confidence + reason), not full event
+    # sourcing with before/after diffs -- see context_resolution.py's
+    # module docstring for the honest scope call.
+    resolution_type: Optional[str] = None  # one of RESOLUTION_TYPES, or None
+    resolution_confidence: Optional[str] = None  # one of RESOLUTION_CONFIDENCE_VALUES, or None
+    resolution_reason: Optional[str] = None  # short free-text explanation from the resolution model call
 
     model_used: Optional[str] = None
     input_tokens: Optional[int] = None
@@ -116,6 +136,9 @@ class Interaction:
             "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else None,
             "reminder_count": self.reminder_count,
             "waiting_on": self.waiting_on,
+            "resolution_type": self.resolution_type,
+            "resolution_confidence": self.resolution_confidence,
+            "resolution_reason": self.resolution_reason,
             "model_used": self.model_used,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,

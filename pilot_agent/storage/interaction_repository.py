@@ -58,3 +58,15 @@ class InteractionRepository(abc.ABC):
         powers the twice-daily Morning Brief/Daily Close summaries. Never
         returns done/cancelled rows even if their next_check_at was left
         stale from before closure."""
+
+    @abc.abstractmethod
+    def open_trackable_since(self, since) -> Iterable[Interaction]:
+        """Open/in_progress interactions with action_type in
+        (follow_up, reminder, todo) whose created_at or last_checked_at
+        is >= since. Powers context_resolution.py's candidate retrieval
+        (2026-09-07, Contextual Follow-up Resolution milestone) -- a
+        deliberately BOUNDED, recent slice of open items, never the whole
+        table, that a new incoming message might be updating. Ordering is
+        the caller's concern (context_resolution.py re-scores and ranks
+        the result itself); implementations should return created_at
+        DESC as a reasonable default."""
