@@ -32,3 +32,19 @@ class InteractionRepository(abc.ABC):
         corrected) whose task_status is 'open' or 'in_progress' -- e.g.
         for a future Daily-Close-style summary. Never guesses; returns
         an empty iterable when there are none."""
+
+    @abc.abstractmethod
+    def due_between(self, start, end) -> Iterable[Interaction]:
+        """Open/in_progress interactions with due_at in [start, end).
+        Powers the 08:15 Morning Brief's "today" lists (Functional Spec
+        v1.0 SS5.1). start/end are timezone-aware datetimes."""
+
+    @abc.abstractmethod
+    def overdue(self, as_of) -> Iterable[Interaction]:
+        """Open/in_progress interactions with due_at < as_of. Powers
+        Morning Brief's "逾期 Todo" and Daily Close's summary."""
+
+    @abc.abstractmethod
+    def open_without_due_date(self) -> Iterable[Interaction]:
+        """Open/in_progress interactions with due_at still null -- e.g.
+        Morning Brief's "尚未排時間的重要 Todo"."""

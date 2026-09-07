@@ -21,6 +21,7 @@ _SCHEMA_STATEMENTS = [
         raw_input TEXT NOT NULL,
         action_type TEXT NOT NULL,
         domain TEXT,
+        due_at TEXT,
         agent_response TEXT,
         model_used TEXT,
         input_tokens INTEGER,
@@ -58,9 +59,21 @@ def connect(database_path: str) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_due_at_column(conn: sqlite3.Connection) -> None:
+    """Additive migration for pre-existing databases created before
+    2026-09-07 (when due_at didn't exist yet). CREATE TABLE IF NOT EXISTS
+    doesn't retrofit columns onto an already-existing table, so this
+    checks PRAGMA table_info and ALTER TABLE ADD COLUMN only if missing --
+    never touches existing rows/columns."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(interactions)")}
+    if "due_at" not in cols:
+        conn.execute("ALTER TABLE interactions ADD COLUMN due_at TEXT")
+
+
 def initialize_schema(conn: sqlite3.Connection) -> None:
     for statement in _SCHEMA_STATEMENTS:
         conn.execute(statement)
+    _ensure_due_at_column(conn)
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
         (str(CURRENT_SCHEMA_VERSION),),

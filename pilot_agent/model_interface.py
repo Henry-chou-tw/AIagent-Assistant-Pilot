@@ -18,6 +18,7 @@ class ModelResult:
     domain: Optional[str]
     response_text: str
     model_used: str
+    due_at: Optional[str] = None  # ISO 8601 datetime string if the model could determine one; never fabricated
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     latency_ms: Optional[float] = None

@@ -47,6 +47,7 @@ class Interaction:
     channel_ref: Optional[str] = None
     domain: Optional[str] = None
     agent_response: Optional[str] = None
+    due_at: Optional[dt.datetime] = None  # deadline/reminder/calendar time if stated; never invented (see schema)
 
     model_used: Optional[str] = None
     input_tokens: Optional[int] = None
@@ -88,6 +89,7 @@ class Interaction:
             "action_type": self.action_type,
             "domain": self.domain,
             "agent_response": self.agent_response,
+            "due_at": self.due_at.isoformat() if self.due_at else None,
             "model_used": self.model_used,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,

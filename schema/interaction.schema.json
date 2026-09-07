@@ -13,67 +13,212 @@
     "task_status"
   ],
   "properties": {
-    "id": { "type": "string", "description": "Stable unique id for this interaction (e.g. interaction-<uuid>)." },
-    "created_at": { "type": "string", "format": "date-time", "description": "When the raw input was received (UTC, ISO 8601)." },
-
-    "source": { "type": "string", "description": "Channel/transport the input arrived through, e.g. 'discord', 'cli'. Never hardcode logic elsewhere against this value beyond routing." },
-    "channel_ref": { "type": ["string", "null"], "description": "Transport-specific reference (e.g. Discord channel id / DM id), opaque to the Agent's domain logic." },
-
-    "raw_input": { "type": "string", "description": "Henry's original input, verbatim, before any processing." },
-
+    "id": {
+      "type": "string",
+      "description": "Stable unique id for this interaction (e.g. interaction-<uuid>)."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the raw input was received (UTC, ISO 8601)."
+    },
+    "source": {
+      "type": "string",
+      "description": "Channel/transport the input arrived through, e.g. 'discord', 'cli'. Never hardcode logic elsewhere against this value beyond routing."
+    },
+    "channel_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Transport-specific reference (e.g. Discord channel id / DM id), opaque to the Agent's domain logic."
+    },
+    "raw_input": {
+      "type": "string",
+      "description": "Henry's original input, verbatim, before any processing."
+    },
     "action_type": {
       "type": "string",
       "description": "The Agent's own initial classification. Action Type and Domain are separate dimensions (Pilot Step 4) -- this field never encodes domain.",
-      "enum": ["todo", "reminder", "follow_up", "calendar", "idea", "knowledge", "decision_record", "general_ai_task", "unknown"]
+      "enum": [
+        "todo",
+        "reminder",
+        "follow_up",
+        "calendar",
+        "idea",
+        "knowledge",
+        "decision_record",
+        "general_ai_task",
+        "unknown"
+      ]
     },
     "domain": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Free-text domain label if determinable from content (e.g. 'Food R&D', 'Business & Strategy'). Null when not determinable -- never fabricated to force a value. Deliberately free text, not an enum: Pilot v1 does not pre-commit to a fixed domain taxonomy (that is exactly the kind of premature framework-expansion this Pilot exists to avoid)."
     },
-
-    "agent_response": { "type": ["string", "null"], "description": "What the Agent actually said/did back to Henry. Null only if no response was produced (e.g. logging-only path)." },
-
-    "model_used": { "type": ["string", "null"], "description": "Model identifier actually invoked for this interaction (e.g. 'claude-sonnet-5'). Null if no model call was made (pure rule/deterministic path)." },
-    "input_tokens": { "type": ["integer", "null"], "minimum": 0, "description": "Input tokens for this invocation, if the provider made this available. Null, never fabricated, when unavailable." },
-    "output_tokens": { "type": ["integer", "null"], "minimum": 0, "description": "Output tokens for this invocation, if available. Null when unavailable." },
-    "latency_ms": { "type": ["number", "null"], "minimum": 0, "description": "Wall-clock time for the model invocation, if easily measurable." },
-    "estimated_cost_usd": { "type": ["number", "null"], "minimum": 0, "description": "Best-effort cost estimate from provider-published pricing, if input/output tokens are known. Null when not computable -- never guessed." },
-    "purpose": { "type": ["string", "null"], "description": "Why this particular model call was made (e.g. 'intake_classification', 'general_ai_task_response'). Used later to decide which purposes can move to deterministic rules or a smaller model (Pilot Step 6)." },
-
+    "agent_response": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "What the Agent actually said/did back to Henry. Null only if no response was produced (e.g. logging-only path)."
+    },
+    "model_used": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Model identifier actually invoked for this interaction (e.g. 'claude-sonnet-5'). Null if no model call was made (pure rule/deterministic path)."
+    },
+    "input_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "Input tokens for this invocation, if the provider made this available. Null, never fabricated, when unavailable."
+    },
+    "output_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "Output tokens for this invocation, if available. Null when unavailable."
+    },
+    "latency_ms": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "Wall-clock time for the model invocation, if easily measurable."
+    },
+    "estimated_cost_usd": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "Best-effort cost estimate from provider-published pricing, if input/output tokens are known. Null when not computable -- never guessed."
+    },
+    "purpose": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Why this particular model call was made (e.g. 'intake_classification', 'general_ai_task_response'). Used later to decide which purposes can move to deterministic rules or a smaller model (Pilot Step 6)."
+    },
     "tool_executions": {
       "type": "array",
       "description": "Any concrete tool/action executions performed while handling this interaction (e.g. a calendar write, a file edit). Empty array, not omitted, when none occurred.",
       "items": {
         "type": "object",
-        "required": ["tool", "summary"],
+        "required": [
+          "tool",
+          "summary"
+        ],
         "properties": {
-          "tool": { "type": "string" },
-          "summary": { "type": "string", "description": "Short, human-readable description of what was executed -- not a full transcript." },
-          "status": { "type": "string", "enum": ["success", "failed", "skipped"] }
+          "tool": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string",
+            "description": "Short, human-readable description of what was executed -- not a full transcript."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failed",
+              "skipped"
+            ]
+          }
         }
       },
       "default": []
     },
-
-    "henry_correction": { "type": ["string", "null"], "description": "What Henry said/did to correct the Agent's classification or response, verbatim, if he did. Null when no correction occurred -- absence of correction is itself meaningful signal, not a gap to fill in." },
-    "final_action_type": {
-      "type": ["string", "null"],
-      "description": "Action Type after Henry's correction, if any. Null means 'same as action_type' (no correction) -- kept separate from action_type so the original AI guess is never overwritten/lost.",
-      "enum": ["todo", "reminder", "follow_up", "calendar", "idea", "knowledge", "decision_record", "general_ai_task", "unknown", null]
+    "henry_correction": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "What Henry said/did to correct the Agent's classification or response, verbatim, if he did. Null when no correction occurred -- absence of correction is itself meaningful signal, not a gap to fill in."
     },
-    "final_domain": { "type": ["string", "null"], "description": "Domain after Henry's correction, if any. Null means 'same as domain' (no correction)." },
-
+    "final_action_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Action Type after Henry's correction, if any. Null means 'same as action_type' (no correction) -- kept separate from action_type so the original AI guess is never overwritten/lost.",
+      "enum": [
+        "todo",
+        "reminder",
+        "follow_up",
+        "calendar",
+        "idea",
+        "knowledge",
+        "decision_record",
+        "general_ai_task",
+        "unknown",
+        null
+      ]
+    },
+    "final_domain": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Domain after Henry's correction, if any. Null means 'same as domain' (no correction)."
+    },
     "task_status": {
       "type": "string",
-      "enum": ["open", "in_progress", "done", "cancelled", "unknown"],
+      "enum": [
+        "open",
+        "in_progress",
+        "done",
+        "cancelled",
+        "unknown"
+      ],
       "description": "Current status of whatever this interaction represents. 'unknown' is a legitimate, honest value -- never defaulted to 'done'."
     },
-    "related_interaction_id": { "type": ["string", "null"], "description": "id of a related earlier interaction (e.g. this is the follow-up this Reminder was about). Null when there is no known relation." },
-
-    "closure_outcome": { "type": ["string", "null"], "description": "What actually happened when this was closed (plain text). Null while still open/unknown." },
-    "closed_at": { "type": ["string", "null"], "format": "date-time", "description": "When task_status transitioned to 'done' or 'cancelled'. Null while not closed." },
-
-    "schema_version": { "type": "string", "default": "1.0.0" }
+    "related_interaction_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "id of a related earlier interaction (e.g. this is the follow-up this Reminder was about). Null when there is no known relation."
+    },
+    "closure_outcome": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "What actually happened when this was closed (plain text). Null while still open/unknown."
+    },
+    "closed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "When task_status transitioned to 'done' or 'cancelled'. Null while not closed."
+    },
+    "schema_version": {
+      "type": "string",
+      "default": "1.0.0"
+    },
+    "due_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "When this item is actually due/relevant (deadline, reminder time, or calendar time), if Henry stated or clearly implied one. Null when not determinable -- never invented (Henry's Functional Spec v1.0 SS4.2: do not fabricate a deadline he did not give). Powers the 08:15 Morning Brief / 22:00 Daily Close; a suggested-but-unconfirmed date must stay out of this field until Henry confirms it."
+    }
   },
   "additionalProperties": false
 }

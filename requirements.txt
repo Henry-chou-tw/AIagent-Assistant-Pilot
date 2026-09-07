@@ -1,2 +1,1 @@
-anthropic>=0.40.0
 jsonschema>=4.20.0

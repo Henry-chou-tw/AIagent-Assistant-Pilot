@@ -60,8 +60,9 @@ pilot_agent.main（唯一入口，決定性程式碼，不是活的對話）
 放的 Discord bot token**。這與這個 Pilot repository 無關（不在這裡面，
 也不會被這裡的任何檔案讀取或複製），但建議之後把它移出這種容易被看到
 的共用資料夾，改用環境變數或至少是一個不會被誤 commit 的位置。這個
-Pilot 自己的 `ANTHROPIC_API_KEY` 一律只從環境變數讀取，`.gitignore`
-也擋掉任何 `.env`／`*token*.txt`／`*secret*` 檔案。
+Pilot 分類呼叫改用已登入的 `claude` CLI 執行（見下方設定），不再需要
+另外申請、儲存 ANTHROPIC_API_KEY。Discord bot token 仍只從環境變數
+讀取，`.gitignore` 也擋掉任何 `.env`／`*token*.txt`／`*secret*` 檔案。
 
 ## 設定
 
@@ -69,8 +70,11 @@ Pilot 自己的 `ANTHROPIC_API_KEY` 一律只從環境變數讀取，`.gitignore
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...   # Windows: set ANTHROPIC_API_KEY=...
 ```
+
+分類呼叫透過 subprocess 呼叫 `claude -p ...`（已登入的 Claude Pro
+session，不需要 ANTHROPIC_API_KEY），所以執行 `pilot_agent.main handle`
+的環境必須能在 PATH 裡找到 `claude` 指令。
 
 啟動一個綁定這個 repository、帶 `--channels` 的 Claude Code session
 （實際指令依你 Discord channel 設定調整），CLAUDE.md 會自動生效。
@@ -85,5 +89,44 @@ export ANTHROPIC_API_KEY=sk-ant-...   # Windows: set ANTHROPIC_API_KEY=...
 ## 手動查詢範例
 
 ```bash
-python -m pilot_agent.main list-open --action-type todo
+.venv/Scripts/python.exe -m pilot_agent.main list-open --action-type todo
 ```
+
+## 主動通知：08:15 今日行程 / 22:00 今日總結（2026-09-07 新增）
+
+依 Henry 明確要求、參考規格書 SS5.1/5.3 精神，加了兩個排程指令：
+
+```bash
+.venv/Scripts/python.exe -m pilot_agent.main morning-brief   # 08:15 今日行程
+.venv/Scripts/python.exe -m pilot_agent.main daily-close     # 22:00 今日總結
+```
+
+兩者都是**純粹查詢 `data/pilot.db`**（不呼叫 claude CLI、不花模型費用），組出訊息後透過
+`pilot_agent/notifications.py` 直接用 Discord Bot REST API（`POST /channels/{id}/messages`）
+發送到 `#assistant-pilot`——**不需要**那個互動式 `claude --channels` session 開著也能發送，
+因為排程觸發的當下不一定有活的 session 在跑。
+
+這不是重新做一個 Discord client：只送出，不接收；接收訊息仍然完全交給
+`plugin:discord@claude-plugins-official` + Channels（見 `pilot_agent/adapters/discord_adapter.py`）。
+
+需要的設定：
+- `discord_token.env` 裡除了 `DISCORD_BOT_TOKEN`，多一行 `DISCORD_PILOT_CHANNEL_ID`
+  （`#assistant-pilot` 的 Discord 頻道數字 ID）。
+- 加 `--no-send` 只印出內容、不真的發送，方便手動測試：
+  `.venv/Scripts/python.exe -m pilot_agent.main morning-brief --no-send`
+
+**排程本身要用 Windows「工作排程器」手動設定**（見 repo 根目錄
+`run-morning-brief.bat` / `run-daily-close.bat`，工作排程器設每天 08:15 / 22:00
+分別執行這兩個 `.bat`）——這步驟目前沒有辦法從這個對話自動幫 Henry 完成，
+Task Scheduler 是否已經設定、有沒有正常觸發，都需要 Henry 自己確認。
+
+### 已知簡化（誠實記錄）
+
+- Morning Brief／Daily Close 依賴新加的 `due_at` 欄位（規格書 SS4.1 的
+  Planned Date／Deadline／Calendar Time／Reminder Time 四個獨立日期概念，
+  v1 先合併成單一 `due_at`，不做四欄分開——這是刻意的簡化，不是遺漏）。
+  `due_at` 只有在 Henry 訊息裡有明確或可合理推算的日期時才會被模型填入，
+  沒有日期就是 null，不會被瞎猜。
+- 22:00 Daily Close 目前是「還開著的事項快照」，不是規格書 SS5.3 原本設計的
+  「只在真的有 Open Loop 卡在 Henry 身上才發送」那種判斷——Pilot v1 還沒有
+  Open Loop 這個物件類型，`daily-close` 指令本身的輸出也會誠實註明這個簡化。

@@ -30,20 +30,21 @@ class SqliteInteractionRepository(InteractionRepository):
             """
             INSERT INTO interactions (
                 id, schema_version, created_at, source, channel_ref, raw_input,
-                action_type, domain, agent_response,
+                action_type, domain, due_at, agent_response,
                 model_used, input_tokens, output_tokens, latency_ms, estimated_cost_usd, purpose,
                 tool_executions_json,
                 henry_correction, final_action_type, final_domain,
                 task_status, related_interaction_id, closure_outcome, closed_at
             ) VALUES (
                 :id, :schema_version, :created_at, :source, :channel_ref, :raw_input,
-                :action_type, :domain, :agent_response,
+                :action_type, :domain, :due_at, :agent_response,
                 :model_used, :input_tokens, :output_tokens, :latency_ms, :estimated_cost_usd, :purpose,
                 :tool_executions_json,
                 :henry_correction, :final_action_type, :final_domain,
                 :task_status, :related_interaction_id, :closure_outcome, :closed_at
             )
             ON CONFLICT(id) DO UPDATE SET
+                due_at=excluded.due_at,
                 agent_response=excluded.agent_response,
                 model_used=excluded.model_used,
                 input_tokens=excluded.input_tokens,
@@ -69,6 +70,7 @@ class SqliteInteractionRepository(InteractionRepository):
                 "raw_input": interaction.raw_input,
                 "action_type": interaction.action_type,
                 "domain": interaction.domain,
+                "due_at": interaction.due_at.isoformat() if interaction.due_at else None,
                 "agent_response": interaction.agent_response,
                 "model_used": interaction.model_used,
                 "input_tokens": interaction.input_tokens,
@@ -102,6 +104,7 @@ class SqliteInteractionRepository(InteractionRepository):
             raw_input=row["raw_input"],
             action_type=row["action_type"],
             domain=row["domain"],
+            due_at=_parse_dt(row["due_at"]),
             agent_response=row["agent_response"],
             model_used=row["model_used"],
             input_tokens=row["input_tokens"],
@@ -138,5 +141,39 @@ class SqliteInteractionRepository(InteractionRepository):
             ORDER BY created_at ASC
             """,
             (action_type,),
+        ).fetchall()
+        return [self._row_to_interaction(r) for r in rows]
+
+    def due_between(self, start: dt.datetime, end: dt.datetime) -> Iterable[Interaction]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM interactions
+            WHERE task_status IN ('open', 'in_progress')
+              AND due_at IS NOT NULL AND due_at >= ? AND due_at < ?
+            ORDER BY due_at ASC
+            """,
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+        return [self._row_to_interaction(r) for r in rows]
+
+    def overdue(self, as_of: dt.datetime) -> Iterable[Interaction]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM interactions
+            WHERE task_status IN ('open', 'in_progress')
+              AND due_at IS NOT NULL AND due_at < ?
+            ORDER BY due_at ASC
+            """,
+            (as_of.isoformat(),),
+        ).fetchall()
+        return [self._row_to_interaction(r) for r in rows]
+
+    def open_without_due_date(self) -> Iterable[Interaction]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM interactions
+            WHERE task_status IN ('open', 'in_progress') AND due_at IS NULL
+            ORDER BY created_at ASC
+            """
         ).fetchall()
         return [self._row_to_interaction(r) for r in rows]

@@ -17,3 +17,20 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# --- GitHub migration hardening (2026-09-07) ---
+# Broader safety-net patterns on top of the specific rules above.
+.env.*
+!.env.example
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+logs/
+.DS_Store
+Thumbs.db
+
+# Stale/scratch artifacts swept up during the GitHub migration -- not
+# production data, not meant to ever be tracked. See Migration Report.
+_to_delete/
